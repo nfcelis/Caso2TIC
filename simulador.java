@@ -5,6 +5,7 @@ import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.FileReader;
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -59,20 +60,59 @@ public class simulador{
 
 }
 
-//Simulación de la ejecución 
+//Simulación de la ejecución opcion 2
 
-public void opcion2(int nproc, int NM){
+
+
+
+
+
+public void opcion2(int nproc, int NM) throws IOException{
+
+  //Cargamos los procesos desde sus respectivos archivos, generados por la opción 1
+  List<Proceso> procesos = new ArrayList<>();
+  for(int i=0;i<nproc;i++){
+    procesos.add(cargarProceso("proceso"+i+".txt", i));
+  }
   
+  //Repartimos equitativamente los marcos 
+  Memoria mem = new Memoria(NM);
+  int marcosPorProc = NM / nproc;
+  int sobrantes = NM % nproc;
+  int siguiente =0;
+  for(int i=0;i<nproc;i++){
+    Proceso p=procesos.get(i);
+    int asignar = marcosPorProc + (sobrantes>0?1:0); //Si hay sobrantes, se asigna uno más
+    for(int k=0;k<asignar;k++){
+      p.marcos.add(siguiente);
+      siguiente++;
+    }
+  }
+  
+  //Por turnos 
+  ArrayDeque<Proceso> cola = new ArrayDeque<>(procesos);
+  for(Proceso p: procesos){
+    cola.add(p);} 
+
+    //Aqui quede...... 
+  }
+
 }
+
+
+
+
+
+
 
 private void escribir(BufferedWriter w, String M, int i, int j, long dv, int tp, char rw) throws IOException {
   long pag = dv / tp, off = dv % tp;
   w.write(M + ":[" + i + "-" + j + "]," + pag + "," + off + "," + rw + "\n");
 }
 
+
+
 //Lector de archivos de entrada por medio de una clase la que permite almacenar los datos de configuración
-  
-  
 
 static final class Config {
     final int TP, NPROC;
@@ -136,6 +176,97 @@ static final class Config {
     return v;
   }
 
+
+// Estructuras para la Opcion 2
+
+
+static final class Ref {
+  final int pag; //Numero de pagina virtual a la que accede esta referencia
+  final boolean write; //True si es escritura, false si es lectura
+
+  Ref(int pag, boolean write) 
+  { this.pag = pag; this.write = write; }
+
+}
+
+static final class EntradaPagina {
+
+  int marco = -1; //Marco en memoria física donde está cargada la página, -1 si no está cargada
+  boolean presente = false; //True si está cargada en memoria física, false si no
+  boolean modificado = false; //True si ha sido modificada (escritura), false si solo lectura
+  int uso = 0; // Para LRU y saber cual fue la última vez que se usó esta página
+}
+
+static final class Proceso{
+  final int id, TP, NF, NC, NR, NP;
+  final List<Ref> refs = new ArrayList<>(); //Lista de referencias del proceso 
+  final List<Integer> marcos = new ArrayList<>();
+  final Map<Integer,EntradaPagina> tabla = new HashMap<>(); //Tabla de páginas del proceso
+
+  int  hits = 0, fallos = 0, swaps=0,indiceRef=0;
+  Proceso(int id, int TP, int NF, int NC, int NR, int NP){
+    this.id = id; this.TP = TP; this.NF = NF; this.NC = NC; this.NR = NR; this.NP = NP;
+  }  
+//Para saber si el proceso ha terminado sus referencias
+  boolean terminado(){
+    return indiceRef >= refs.size();
+  }
+  //Para obtener la siguiente referencia del proceso
+  Ref refActual(){
+    return refs.get(indiceRef);
+  }
+
+static final class Memoria {
+
+  final int[] dueños; // id del proceso dueño del marco, -1 si libre
+  final int[] pagMarco; // Página virtual cargada en el marco, -1 si libre
+  Memoria(int marcos){
+    dueños = new int[marcos];
+    pagMarco = new int[marcos];
+    Arrays.fill(dueños, -1);
+    Arrays.fill(pagMarco, -1);
+  }
+
+}
+
+  //Carga de procesos para Opcion 2: 
+
+  private static Proceso cargarProceso(String ruta, int id) throws IOException {
+    try(BufferedReader br = new BufferedReader(new FileReader(ruta))){
+    int TP = parseIntReq(br.readLine(), "TP");
+    int NF = parseIntReq(br.readLine(), "NF");
+    int NC = parseIntReq(br.readLine(), "NC");
+    int NR = parseIntReq(br.readLine(), "NR");
+    int NP = parseIntReq(br.readLine(), "NP");
+    Proceso p = new Proceso(id, TP, NF, NC, NR, NP);
+
+    // Referencias: Mx:[i-j],pag,off,r|w  -> nos importa pag y r/w
+    String ln;
+    while((ln = br.readLine()) != null){
+      ln = ln.trim(); if(ln.isEmpty()) continue;
+      // Formato: algo, PAG, OFF, RW
+      String[] parts = ln.split(",");
+      if(parts.length < 4) continue;
+      int pag = Integer.parseInt(parts[1].trim());
+      char rw = parts[3].trim().charAt(0);
+      p.refs.add(new Ref(pag, rw=='w'));
+    }
+    return p;
+  }
+}
+
+private static int parseIntReq(String linea, String key){
+  if(linea == null) throw new IllegalArgumentException("Cabecera incompleta: falta " + key);
+  linea = linea.trim();
+  int pos = linea.indexOf('=');
+  if(pos <= 0) throw new IllegalArgumentException("Línea inválida ("+key+"): " + linea);
+  String k = linea.substring(0,pos).trim();
+  String v = linea.substring(pos+1).trim();
+  if(!k.equals(key)) throw new IllegalArgumentException("Esperaba "+key+" y llegó "+k);
+  return Integer.parseInt(v);
+}
+
+  
 
 
 //Main del programa
