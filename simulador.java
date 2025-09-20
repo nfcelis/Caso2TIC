@@ -1,12 +1,15 @@
 // Laura Fonseca
-// N Felipe Celis D
+// N Felipe Celis D 202320636
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.FileReader;
 import java.io.IOException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public class simulador{
@@ -60,14 +63,13 @@ public class simulador{
 
 }
 
+
+
+
 //Simulación de la ejecución opcion 2
 
 
-
-
-
-
-public void opcion2(int nproc, int NM) throws IOException{
+public void opcion2( int NM,int nproc) throws IOException{
 
   //Cargamos los procesos desde sus respectivos archivos, generados por la opción 1
   List<Proceso> procesos = new ArrayList<>();
@@ -77,31 +79,149 @@ public void opcion2(int nproc, int NM) throws IOException{
   
   //Repartimos equitativamente los marcos 
   Memoria mem = new Memoria(NM);
-  int marcosPorProc = NM / nproc;
+  int base = NM / nproc;
   int sobrantes = NM % nproc;
   int siguiente =0;
   for(int i=0;i<nproc;i++){
     Proceso p=procesos.get(i);
-    int asignar = marcosPorProc + (sobrantes>0?1:0); //Si hay sobrantes, se asigna uno más
-    for(int k=0;k<asignar;k++){
-      p.marcos.add(siguiente);
-      siguiente++;
+    int asignar = base + (i< sobrantes?1:0); //Si hay sobrantes, se asigna uno más
+    for(int k=0;k<asignar && siguiente < NM ;k++){
+      p.marcos.add(siguiente++);
     }
   }
   
   //Por turnos 
-  ArrayDeque<Proceso> cola = new ArrayDeque<>(procesos);
+  ArrayDeque<Integer> cola = new ArrayDeque<>();
   for(Proceso p: procesos){
-    cola.add(p);} 
+    cola.add(p.id); } 
 
-    //Aqui quede...... 
+    long tiempo =0; //Para LRU, tiempo global
+    while(!cola.isEmpty()){
+      int pid = cola.poll();
+      Proceso p = procesos.get(pid);
+
+      if(p.terminado()){
+        reasignarMarcosAlMasFallado(p,procesos,mem);
+        continue;
+      }
+      Ref ref = p.refActual();
+      tiempo++;
+
+      EntradaPagina ep =  p.tablaPaginas.computeIfAbsent(ref.pag, k -> new EntradaPagina());
+
+      if(ep.presente){
+        //Hit
+        p.hits++;
+        ep.ultimoUso = tiempo;
+        if(ref.escritura) ep.modificado = true;
+        p.indiceRef++;
+        cola.add(p.id);
+        
+      }
+      else{
+
+        //Fallo 
+        p.fallos++;
+        Integer libre =marcoLibre(p,mem);
+        if(libre != null){
+          //Fallo sin reemplazo, entra a un marco libre propio (Swap) 
+
+          p.swaps+=1;
+          cargarPaginaEnMarco(p, ref.pag, libre, mem,tiempo, ref.escritura);
+          p.indiceRef++; //Avanzamos tras el fallo 
+          cola.add(pid);
+
+        }
+        else{
+          //Fallo con reemplazo (Swap +2)
+
+          int vict = elegirVictimaLRU(p,mem);
+          p.swaps+=2;
+          reemplazarPaginaEnMarco(p, ref.pag, vict, mem, tiempo, ref.escritura);
+          p.indiceRef++; //Avanzamos tras el fallo
+          cola.add(pid);
+        }
+
+      }
+
+  }
+
+  for (Proceso p:procesos){
+    int total = p.refs.size();
+    double tasaexito  = total == 0 ? 0 : (double)p.hits   / total;
+    double tasafalla = total == 0 ? 0 : (double)p.fallos / total;
+    System.out.printf(
+      "proc%d  refs=%d  hits=%d  fallos=%d  SWAP=%d  Tasa éxito=%.3f  Tasa fallas =%.3f  \n",
+      p.id, total, p.hits, p.fallos, p.swaps, tasaexito, tasafalla
+    );
   }
 
 }
 
 
+ //Funciones auxiliares para la opción 2
+
+private static Integer marcoLibre(Proceso p, Memoria mem) {
+  for (int f : p.marcos) if (mem.duenios[f] == -1) return f;
+  return null;
+}
+
+//Elegir la "victima" para reemplazo de página usando LRU (El que tenga menor uso ultimo uso)
+private static int elegirVictimaLRU(Proceso p, Memoria mem) {
+  long mejor = Long.MAX_VALUE; int vict = -1;
+  for (int f : p.marcos) {
+    int pag = mem.paginaEnMarco[f];
+    EntradaPagina ep = p.tablaPaginas.get(pag);
+    long uso = (ep != null && ep.presente) ? ep.ultimoUso : Long.MIN_VALUE;
+    if (uso < mejor) { mejor = uso; vict = f; }
+  }
+  return vict;
+}
+
+private static void cargarPaginaEnMarco(Proceso p, int pagina, int marco, Memoria mem, long tiempo, boolean escritura) {
+  EntradaPagina ep = p.tablaPaginas.computeIfAbsent(pagina, k -> new EntradaPagina());
+  ep.presente = true; ep.marco = marco; ep.ultimoUso = tiempo;
+  if (escritura) ep.modificado = true;
+  mem.duenios[marco] = p.id;
+  mem.paginaEnMarco[marco] = pagina;
+}
+
+private static void reemplazarPaginaEnMarco(Proceso p, int nuevaPag, int marco, Memoria mem, long tiempo, boolean escritura) {
+  int viejaPag = mem.paginaEnMarco[marco];
+  if (viejaPag >= 0) {
+    EntradaPagina vieja = p.tablaPaginas.get(viejaPag);
+    if (vieja != null) { vieja.presente = false; vieja.marco = -1; }
+  }
+  cargarPaginaEnMarco(p, nuevaPag, marco, mem, tiempo, escritura);
+}
 
 
+private static void liberarMarcos(Proceso fin, Memoria mem) {
+  for (int f : fin.marcos) {
+    mem.duenios[f] = -1;
+    mem.paginaEnMarco[f] = -1;
+  }
+  for (EntradaPagina e : fin.tablaPaginas.values()) {
+    e.presente = false; e.marco = -1;
+  }
+}
+
+private static void reasignarMarcosAlMasFallado(Proceso fin, List<Proceso> ps, Memoria mem) {
+  if (fin.marcos.isEmpty()) return;
+  Proceso objetivo = null;
+  for (Proceso p : ps) {
+    if (p == fin || p.terminado()) continue;
+    if (objetivo == null || p.fallos > objetivo.fallos) objetivo = p;
+  }
+  if (objetivo != null) {
+
+      liberarMarcos(fin, mem);           // quedan libres en memoria global
+      objetivo.marcos.addAll(fin.marcos);
+    
+  }
+    fin.marcos.clear();
+  
+}
 
 
 
@@ -182,10 +302,10 @@ static final class Config {
 
 static final class Ref {
   final int pag; //Numero de pagina virtual a la que accede esta referencia
-  final boolean write; //True si es escritura, false si es lectura
+  final boolean escritura; //True si es escritura, false si es lectura
 
-  Ref(int pag, boolean write) 
-  { this.pag = pag; this.write = write; }
+  Ref(int pag, boolean escritura) 
+  { this.pag = pag; this.escritura = escritura; }
 
 }
 
@@ -194,14 +314,14 @@ static final class EntradaPagina {
   int marco = -1; //Marco en memoria física donde está cargada la página, -1 si no está cargada
   boolean presente = false; //True si está cargada en memoria física, false si no
   boolean modificado = false; //True si ha sido modificada (escritura), false si solo lectura
-  int uso = 0; // Para LRU y saber cual fue la última vez que se usó esta página
+  long ultimoUso = 0; // Para LRU y saber cual fue la última vez que se usó esta página
 }
 
 static final class Proceso{
   final int id, TP, NF, NC, NR, NP;
   final List<Ref> refs = new ArrayList<>(); //Lista de referencias del proceso 
   final List<Integer> marcos = new ArrayList<>();
-  final Map<Integer,EntradaPagina> tabla = new HashMap<>(); //Tabla de páginas del proceso
+  final Map<Integer,EntradaPagina> tablaPaginas = new HashMap<>(); //Tabla de páginas del proceso
 
   int  hits = 0, fallos = 0, swaps=0,indiceRef=0;
   Proceso(int id, int TP, int NF, int NC, int NR, int NP){
@@ -215,16 +335,17 @@ static final class Proceso{
   Ref refActual(){
     return refs.get(indiceRef);
   }
+}
 
 static final class Memoria {
 
-  final int[] dueños; // id del proceso dueño del marco, -1 si libre
-  final int[] pagMarco; // Página virtual cargada en el marco, -1 si libre
-  Memoria(int marcos){
-    dueños = new int[marcos];
-    pagMarco = new int[marcos];
-    Arrays.fill(dueños, -1);
-    Arrays.fill(pagMarco, -1);
+  final int[] duenios; // id del proceso dueño del marco, -1 si libre
+  final int[] paginaEnMarco; // Página virtual cargada en el marco, -1 si libre
+  Memoria(int cantidadMarcos){
+    duenios = new int[cantidadMarcos];
+    paginaEnMarco = new int[cantidadMarcos];
+    Arrays.fill(duenios, -1);
+    Arrays.fill(paginaEnMarco, -1);
   }
 
 }
@@ -269,20 +390,27 @@ private static int parseIntReq(String linea, String key){
   
 
 
-//Main del programa
-    public static void main( String[] args) throws IOException{
-        if(args.length < 1){
-            System.out.println("Falta archivo de configuración");
-            return;
-        }
-        Config config = leerConfig(args[0]);
-        new simulador().opcion1(config.TP, config.NPROC, config.nfs, config.ncs);
-        System.out.println("Archivos generados");
-
+//Main del programa Opcion 1: Generar referencias , Opcion 2: Simular ejecución
+public static void main(String[] args) throws IOException {
+      if (args.length == 1) {
+      Config cfg = leerConfig(args[0]);
+      new simulador().opcion1(cfg.TP, cfg.NPROC, cfg.nfs, cfg.ncs);
+      System.out.println("Archivos 'proceso<i>.txt' generados.");
+      return;
+    }
+    if (args.length == 2 ) {
+      int nproc = Integer.parseInt(args[0]);
+      int marcos = Integer.parseInt(args[1]);
+      new simulador().opcion2(nproc, marcos);
+      return;
     }
 
+     // Especificación de las entradas para cada opcion :)
+    System.out.println("Uso:");
+    System.out.println("  Opción 1 (generar referencias): java simulador <config.txt>");
+    System.out.println("  Opción 2 (simular):              java simulador <NM> <NPROC>");
 
-
+}
 
 }
 
